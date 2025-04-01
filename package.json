@@ -1,0 +1,32 @@
+{
+  "name": "docs-crawler-mcp",
+  "version": "0.1.0",
+  "description": "Crawl a documentation website",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "docs-crawler-mcp": "./build/index.js"
+  },
+  "files": [
+    "build"
+  ],
+  "scripts": {
+    "build": "tsc && node -e \"require('fs').chmodSync('build/index.js', '755')\"",
+    "prepare": "npm run build",
+    "watch": "tsc --watch",
+    "inspector": "npx @modelcontextprotocol/inspector build/index.js"
+  },
+  "dependencies": {
+    "@lancedb/lancedb": "^0.18.2",
+    "@modelcontextprotocol/sdk": "0.6.0",
+    "axios": "^1.8.4",
+    "cheerio": "^1.0.0",
+    "openai": "^4.91.1",
+    "p-queue": "^8.1.0"
+  },
+  "devDependencies": {
+    "@types/cheerio": "^0.22.35",
+    "@types/node": "^20.11.24",
+    "typescript": "^5.3.3"
+  }
+}
