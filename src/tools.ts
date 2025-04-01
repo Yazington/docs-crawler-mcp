@@ -111,11 +111,17 @@ export async function handleSearchWebsite(args: {
       }
     }
 
-    // Index the crawled content
-    logger.info("IndexDB", `Indexing crawled content from ${outputDir}`);
+    // Check if the content needs to be indexed
     const db = await IndexDatabase.getInstance();
-    const indexCount = await db.indexDocuments(outputDir);
-    logger.info("IndexDB", `Indexed ${indexCount} documents`);
+
+    // Only index if we just crawled the website or if it was forced
+    if (needsCrawling) {
+      logger.info("IndexDB", `Indexing crawled content from ${outputDir}`);
+      const indexCount = await db.indexDocuments(outputDir);
+      logger.info("IndexDB", `Indexed ${indexCount} documents`);
+    } else {
+      logger.info("IndexDB", `Using existing index for ${url}`);
+    }
 
     // Perform searches with all generated queries
     logger.info(
@@ -259,18 +265,26 @@ export async function handleRecrawlWebsite(args: { url: string }) {
  * Search directly in existing data without crawling
  */
 export async function handleSearchExistingData(args: {
-  query: string;
+  queries: string[];
   url?: string;
   limit?: number;
 }) {
-  const { query, url, limit = 5 } = args;
+  const { queries, url, limit = 5 } = args;
 
-  if (!query) {
-    throw new McpError(ErrorCode.InvalidParams, "Search query is required");
+  if (!queries || !Array.isArray(queries) || queries.length === 0) {
+    throw new McpError(
+      ErrorCode.InvalidParams,
+      "At least one search query is required"
+    );
   }
 
   try {
-    logger.info("Search", `Searching existing data for: "${query}"`);
+    logger.info(
+      "Search",
+      `Searching existing data with ${queries.length} queries: "${queries.join(
+        '", "'
+      )}"`
+    );
 
     // If URL is provided, check if it exists in our data
     if (url) {
@@ -285,27 +299,89 @@ export async function handleSearchExistingData(args: {
       logger.info("Search", `Limiting search to website: ${url}`);
     }
 
-    // Get database instance and search
+    // Get database instance
     const db = await IndexDatabase.getInstance();
-    const results = await db.search(query, limit);
 
-    logger.info(
-      "Search",
-      `Found ${results.length} results for query: "${query}"`
-    );
+    // Interface for search results with additional fields
+    interface SearchResultWithDistance {
+      url: string;
+      title: string;
+      content: string;
+      distance: number;
+      relevance?: number;
+      matchedQueries?: string[];
+    }
 
-    // If URL is provided, filter results to only include matches from that website
-    let filteredResults = results;
+    interface SearchResultWithRelevance extends SearchResultWithDistance {
+      relevance: number;
+    }
+
+    const allResults: SearchResultWithRelevance[] = [];
+
+    // Search for each query
+    for (const q of queries) {
+      logger.info("Search", `Searching for: "${q}"`);
+      const results = await db.search(q, limit);
+      logger.info(
+        "Search",
+        `Found ${results.length} results for query: "${q}"`
+      );
+
+      // Add results with relevance score
+      allResults.push(
+        ...results.map(
+          (r: SearchResultWithDistance): SearchResultWithRelevance => ({
+            ...r,
+            relevance: parseFloat((1 - r.distance).toFixed(4)),
+            matchedQueries: [q],
+          })
+        )
+      );
+    }
+
+    // Apply URL filtering if needed
+    let filteredResults = allResults;
     if (url) {
-      filteredResults = results.filter((result) => result.url.startsWith(url));
+      filteredResults = allResults.filter((result) =>
+        result.url.startsWith(url)
+      );
       logger.info(
         "Search",
         `Filtered to ${filteredResults.length} results from ${url}`
       );
     }
 
-    // Format the results
-    return filteredResults.map((result) => formatSearchResult(result));
+    // Deduplicate results by URL and sort by relevance
+    const uniqueResults = Array.from(
+      filteredResults
+        .reduce((map, result) => {
+          const existing = map.get(result.url);
+          if (!existing) {
+            // First time seeing this URL
+            map.set(result.url, result);
+          } else {
+            // We've seen this URL before, keep the higher relevance score
+            if (result.relevance > existing.relevance) {
+              existing.relevance = result.relevance;
+            }
+            // Combine the matched queries
+            existing.matchedQueries = [
+              ...(existing.matchedQueries || []),
+              ...(result.matchedQueries || []),
+            ].filter((q, i, arr) => arr.indexOf(q) === i); // Remove duplicates
+            map.set(result.url, existing);
+          }
+          return map;
+        }, new Map<string, SearchResultWithRelevance>())
+        .values()
+    )
+      .sort((a, b) => b.relevance - a.relevance)
+      .slice(0, limit);
+
+    logger.info("Search", `Returning ${uniqueResults.length} unique results`);
+
+    // Format final results
+    return uniqueResults.map((result) => formatSearchResult(result));
   } catch (error: unknown) {
     const errorMessage = error instanceof Error ? error.message : String(error);
     logger.error("Search", `Operation failed: ${errorMessage}`);

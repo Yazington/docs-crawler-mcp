@@ -98,9 +98,14 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
         inputSchema: {
           type: "object",
           properties: {
-            query: {
-              type: "string",
-              description: "Search query to find in existing data",
+            queries: {
+              type: "array",
+              items: {
+                type: "string",
+              },
+              description: "Search queries to find in existing data",
+              minItems: 1,
+              maxItems: 10,
             },
             url: {
               type: "string",
@@ -111,7 +116,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
               description: "Maximum number of results to return (default: 5)",
             },
           },
-          required: ["query"],
+          required: ["queries"],
         },
       },
     ],
@@ -163,7 +168,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     } else if (request.params.name === "search_existing_data") {
       const results = await handleSearchExistingData(
         request.params.arguments as {
-          query: string;
+          queries: string[];
           url?: string;
           limit?: number;
         }
