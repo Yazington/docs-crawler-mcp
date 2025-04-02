@@ -22,7 +22,8 @@
     "axios": "^1.8.4",
     "cheerio": "^1.0.0",
     "openai": "^4.91.1",
-    "p-queue": "^8.1.0"
+    "p-queue": "^8.1.0",
+    "puppeteer": "^24.5.0"
   },
   "devDependencies": {
     "@types/cheerio": "^0.22.35",

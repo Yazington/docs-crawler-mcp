@@ -1,5 +1,4 @@
-import axios from "axios";
-import * as cheerio from "cheerio";
+import puppeteer from "puppeteer";
 import PQueue from "p-queue";
 import * as path from "path";
 import { URL } from "url";
@@ -12,6 +11,7 @@ export class WebsiteCrawler {
   private visited: Set<string>;
   private job: CrawlJob;
   private baseUrl: URL;
+  private browser: puppeteer.Browser | null = null;
 
   constructor(jobId: string, baseUrl: string, outputDir: string) {
     this.queue = new PQueue({ concurrency: 2 });
@@ -30,108 +30,110 @@ export class WebsiteCrawler {
     crawlJobs.set(jobId, this.job);
   }
 
+  private async initBrowser() {
+    if (!this.browser) {
+      this.browser = await puppeteer.launch({ headless: true });
+    }
+  }
+
   private async processPage(url: string): Promise<PageResult | null> {
     logger.info("Crawler", `Processing page: ${url}`);
     try {
-      const response = await axios.get(url);
-      const $ = cheerio.load(response.data);
+      await this.initBrowser();
+      const page = await this.browser!.newPage();
+      await page.goto(url, { waitUntil: "networkidle0" });
 
       // Extract links with better handling of relative URLs
-      const links: string[] = [];
-      $("a").each((_, element) => {
-        const href = $(element).attr("href");
-        if (href) {
-          // Skip anchor links and javascript: URLs
-          if (href.startsWith("#") || href.startsWith("javascript:")) {
-            return;
-          }
-
-          try {
-            // Handle relative URLs
-            let fullUrl: string;
-            if (href.startsWith("/")) {
-              // Absolute path
-              fullUrl = new URL(href, this.baseUrl).href;
-            } else if (!href.includes("://")) {
-              // Relative path
-              const urlObj = new URL(url);
-              const basePath = urlObj.pathname.endsWith("/")
-                ? urlObj.pathname
-                : urlObj.pathname.substring(
-                    0,
-                    urlObj.pathname.lastIndexOf("/") + 1
-                  );
-              fullUrl = new URL(href, `${urlObj.origin}${basePath}`).href;
-            } else {
-              // Already absolute URL
-              fullUrl = href;
+      const links = await page.evaluate((baseUrl) => {
+        const anchors = Array.from(document.querySelectorAll("a"));
+        return anchors
+          .map((a) => {
+            const href = a.getAttribute("href");
+            if (
+              !href ||
+              href.startsWith("#") ||
+              href.startsWith("javascript:")
+            ) {
+              return null;
             }
-
-            // Only include URLs from the same domain
-            if (fullUrl.startsWith(this.baseUrl.origin)) {
-              links.push(fullUrl);
+            try {
+              let fullUrl: string;
+              if (href.startsWith("/")) {
+                fullUrl = new URL(href, baseUrl).href;
+              } else if (!href.includes("://")) {
+                const basePath = window.location.pathname.endsWith("/")
+                  ? window.location.pathname
+                  : window.location.pathname.substring(
+                      0,
+                      window.location.pathname.lastIndexOf("/") + 1
+                    );
+                fullUrl = new URL(href, `${window.location.origin}${basePath}`)
+                  .href;
+              } else {
+                fullUrl = href;
+              }
+              return fullUrl.startsWith(baseUrl) ? fullUrl : null;
+            } catch (error) {
+              console.error(`Failed to parse URL ${href}: ${error}`);
+              return null;
             }
-          } catch (error) {
-            logger.error("Crawler", `Failed to parse URL ${href}: ${error}`);
-          }
-        }
-      });
+          })
+          .filter((url): url is string => url !== null);
+      }, this.baseUrl.origin);
 
-      // Wait for client-side content to fully load
-      // Use a longer timeout to ensure dynamic content has loaded
-      await new Promise((resolve) => setTimeout(resolve, 3000));
+      // Extract title
+      const title = await page.title();
 
-      // Additional waiting for any pending network requests or animations
-      // This helps ensure the page is fully rendered
-      await new Promise((resolve) => setTimeout(resolve, 1000));
+      // Extract content
+      const content = await page.evaluate(() => {
+        // Remove script and style tags
+        document.querySelectorAll("script, style").forEach((el) => el.remove());
 
-      // Extract content - specifically target shadcn/ui docs structure
-      const title = $("title").text().trim();
+        const mainContent = document.querySelector(
+          "main, article, .content, .documentation, [role='main']"
+        );
+        let content = "";
 
-      // Remove script and style tags
-      $("script, style").remove();
+        if (mainContent) {
+          // Get headings
+          mainContent
+            .querySelectorAll("h1, h2, h3, h4, h5, h6")
+            .forEach((el) => {
+              content += "\n" + el.textContent?.trim() + "\n";
+            });
 
-      // Extract content from common documentation elements
-      let content = "";
+          // Get paragraphs and text content
+          mainContent
+            .querySelectorAll("p, pre, code, .content, article")
+            .forEach((el) => {
+              const text = el.textContent?.trim();
+              if (text) {
+                content += text + "\n";
+              }
+            });
 
-      // Try to find the main content area
-      const mainContent = $(
-        "main, article, .content, .documentation, [role='main']"
-      );
-
-      if (mainContent.length > 0) {
-        // Get headings
-        mainContent.find("h1, h2, h3, h4, h5, h6").each((_, el) => {
-          content += "\n" + $(el).text().trim() + "\n";
-        });
-
-        // Get paragraphs and text content
-        mainContent.find("p, pre, code, .content, article").each((_, el) => {
-          const text = $(el).text().trim();
-          if (text) {
-            content += text + "\n";
-          }
-        });
-
-        // Get lists
-        mainContent.find("ul, ol").each((_, el) => {
-          $(el)
-            .find("li")
-            .each((_, li) => {
-              const text = $(li).text().trim();
+          // Get lists
+          mainContent.querySelectorAll("ul, ol").forEach((el) => {
+            el.querySelectorAll("li").forEach((li) => {
+              const text = li.textContent?.trim();
               if (text) {
                 content += "• " + text + "\n";
               }
             });
-        });
+          });
 
-        content = content.trim();
-      }
+          content = content.trim();
+        }
 
-      // Fallback to body text if no main content found
-      if (!content) {
-        content = $("body").text().trim();
-      }
+        // Fallback to body text if no main content found
+        if (!content) {
+          content = document.body.textContent?.trim() || "";
+        }
+
+        return content;
+      });
+
+      await page.close();
 
       return {
         url,
@@ -158,7 +160,7 @@ export class WebsiteCrawler {
         `${urlPath.replace(/\//g, "_") || "index"}.json`
       );
 
-      // Save the page content
+      // Save the page content with proper JSON formatting
       await saveToFile(filePath, JSON.stringify(result, null, 2));
     } catch (error: unknown) {
       const errorMessage =
@@ -169,44 +171,66 @@ export class WebsiteCrawler {
   }
 
   async crawl(): Promise<void> {
-    try {
-      // Start with the base URL
-      this.queue.add(async () => {
-        const normalizedUrl = normalizeUrl(this.baseUrl.href, this.baseUrl);
-        if (!this.visited.has(normalizedUrl)) {
-          this.visited.add(normalizedUrl);
-          const result = await this.processPage(normalizedUrl);
-          if (result) {
-            await this.savePage(result);
-            this.job.pagesProcessed++;
+    const MAX_DEPTH = 2;
+    const processUrl = async (url: string, depth: number): Promise<void> => {
+      const normalizedUrl = normalizeUrl(url, this.baseUrl);
+      if (this.visited.has(normalizedUrl)) return;
+      this.visited.add(normalizedUrl);
 
-            // Add new links to queue
+      try {
+        const result = await this.processPage(normalizedUrl);
+        if (result) {
+          await this.savePage(result);
+          this.job.pagesProcessed++;
+          if (depth < MAX_DEPTH) {
             for (const link of result.links) {
               if (!this.visited.has(link)) {
                 this.queue.add(async () => {
-                  this.visited.add(link);
-                  const pageResult = await this.processPage(link);
-                  if (pageResult) {
-                    await this.savePage(pageResult);
-                    this.job.pagesProcessed++;
-                  }
+                  await processUrl(link, depth + 1);
                 });
               }
             }
           }
         }
-      });
+        // Even if result is null (page failed to load), we continue crawling
+      } catch (error) {
+        // Log the error but continue crawling
+        const errorMessage =
+          error instanceof Error ? error.message : String(error);
+        logger.error(
+          "Crawler",
+          `Error processing ${normalizedUrl}: ${errorMessage}`
+        );
+        this.job.errors.push(
+          `Error processing ${normalizedUrl}: ${errorMessage}`
+        );
+      }
+    };
 
-      // Wait for all tasks to complete
+    this.queue.add(async () => {
+      await processUrl(this.baseUrl.href, 0);
+    });
+
+    try {
       await this.queue.onIdle();
-      this.job.status = "completed";
+      // Only mark as failed if no pages were processed at all
+      if (this.job.pagesProcessed === 0) {
+        this.job.status = "failed";
+        if (this.job.errors.length === 0) {
+          this.job.errors.push(
+            "Crawl failed: No pages were processed successfully"
+          );
+        }
+      } else {
+        this.job.status = "completed";
+      }
       this.job.endTime = new Date();
     } catch (error: unknown) {
       const errorMessage =
         error instanceof Error ? error.message : String(error);
-      logger.error("Crawler", `Crawl failed: ${errorMessage}`);
+      logger.error("Crawler", `Fatal crawl error: ${errorMessage}`);
       this.job.status = "failed";
-      this.job.errors.push(`Crawl failed: ${errorMessage}`);
+      this.job.errors.push(`Fatal crawl error: ${errorMessage}`);
       this.job.endTime = new Date();
     }
   }

@@ -32,9 +32,9 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
   return {
     tools: [
       {
-        name: "search_website",
+        name: "Search Indexed Documentation From a Website",
         description:
-          "Crawl, index and search a documentation website with multiple diverse queries - all in one operation",
+          "Crawl, index and search a documentation website with multiple diverse queries - all in one operation. Please use really diverse queries based on your conversation and everything you might need to accomplish the task",
         inputSchema: {
           type: "object",
           properties: {
@@ -67,7 +67,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
         },
       },
       {
-        name: "list_crawled_websites",
+        name: "Get all Crawled Websites",
         description:
           "List all websites that have been crawled and are available for searching",
         inputSchema: {
@@ -77,7 +77,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
         },
       },
       {
-        name: "recrawl_website",
+        name: "Recrawl and Reindex a Website",
         description:
           "Force recrawl a previously crawled website to update its content",
         inputSchema: {
@@ -92,9 +92,9 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
         },
       },
       {
-        name: "search_existing_data",
+        name: "Search Crawled and Indexed Documentation",
         description:
-          "Search directly in existing crawled data without crawling a new website",
+          "Search directly in existing crawled data without crawling a new website. Please use really diverse queries based on your conversation and everything you might need to accomplish the task",
         inputSchema: {
           type: "object",
           properties: {
@@ -126,7 +126,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
 // Handle tool calls
 server.setRequestHandler(CallToolRequestSchema, async (request) => {
   try {
-    if (request.params.name === "search_website") {
+    if (request.params.name === "Search Indexed Documentation From a Website") {
       const results = await handleSearchWebsite(
         request.params.arguments as {
           url: string;
@@ -143,7 +143,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           },
         ],
       };
-    } else if (request.params.name === "list_crawled_websites") {
+    } else if (request.params.name === "Get all Crawled Websites") {
       const websites = await handleListCrawledWebsites();
       return {
         content: [
@@ -153,7 +153,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           },
         ],
       };
-    } else if (request.params.name === "recrawl_website") {
+    } else if (request.params.name === "Recrawl and Reindex a Website") {
       const result = await handleRecrawlWebsite(
         request.params.arguments as { url: string }
       );
@@ -165,7 +165,9 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           },
         ],
       };
-    } else if (request.params.name === "search_existing_data") {
+    } else if (
+      request.params.name === "Search Crawled and Indexed Documentation"
+    ) {
       const results = await handleSearchExistingData(
         request.params.arguments as {
           queries: string[];

@@ -257,6 +257,8 @@ export const logger = {
     console.error(`[${context}] ${message}`),
   error: (context: string, message: string) =>
     console.error(`[Error:${context}] ${message}`),
+  warn: (context: string, message: string) =>
+    console.error(`[Warning:${context}] ${message}`),
   debug: (context: string, message: string) =>
     console.error(`[Debug:${context}] ${message}`),
 };

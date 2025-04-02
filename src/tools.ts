@@ -67,9 +67,20 @@ export async function handleSearchWebsite(args: {
       await crawler.crawl(); // Wait for crawl to complete
 
       const job = crawlJobs.get(jobId);
-      if (!job || job.status === "failed" || job.errors.length > 0) {
-        logger.error("Crawler", `Crawl failed: ${job?.errors.join(", ")}`);
-        throw new Error(`Crawl failed: ${job?.errors.join(", ")}`);
+      if (!job || (job.status === "failed" && job.pagesProcessed === 0)) {
+        logger.error(
+          "Crawler",
+          `Crawl failed completely: ${job?.errors.join(", ")}`
+        );
+        throw new Error(`Crawl failed completely: ${job?.errors.join(", ")}`);
+      }
+
+      // Log any errors but continue if we have processed pages
+      if (job.errors.length > 0) {
+        logger.warn(
+          "Crawler",
+          `Completed with some errors: ${job.errors.join(", ")}`
+        );
       }
 
       logger.info(
@@ -126,7 +137,7 @@ export async function handleSearchWebsite(args: {
     // Perform searches with all generated queries
     logger.info(
       "Search",
-      `Executing multiple searches with ${queries.length} queries`
+      `Executing multiple searches with ${queries.length} queries for URL: ${url}`
     );
     interface SearchResultWithDistance {
       url: string;
@@ -142,56 +153,76 @@ export async function handleSearchWebsite(args: {
     }
 
     const allResults: SearchResultWithRelevance[] = [];
+    const seenDocuments = new Set<string>();
 
     for (const q of queries) {
-      logger.info("Search", `Searching for: "${q}"`);
-      const results = await db.search(q, limit);
+      logger.info("Search", `Searching for: "${q}" in ${url}`);
+      const results = await db.search(q, limit * 2, url); // Pass the url as baseUrl
       logger.info(
         "Search",
-        `Found ${results.length} results for query: "${q}"`
+        `Found ${results.length} results for query: "${q}" in ${url}`
       );
 
-      // Add results with relevance score
-      allResults.push(
-        ...results.map(
+      // Log the URLs of the results
+      results.forEach((r, index) => {
+        logger.info("Search", `Result ${index + 1} URL: ${r.url}`);
+      });
+
+      // Add results with relevance score, excluding already seen documents
+      const newResults = results
+        .filter((r) => !seenDocuments.has(r.url))
+        .map(
           (r: SearchResultWithDistance): SearchResultWithRelevance => ({
             ...r,
             relevance: parseFloat((1 - r.distance).toFixed(4)),
           })
-        )
-      );
+        );
+
+      allResults.push(...newResults);
+
+      // Mark these documents as seen
+      newResults.forEach((r) => seenDocuments.add(r.url));
+
+      // If we have enough results, stop searching
+      if (allResults.length >= limit) break;
     }
 
-    // Deduplicate results by URL and sort by relevance
-    const uniqueResults = Array.from(
-      allResults
-        .reduce((map, result) => {
-          const existing = map.get(result.url);
-          if (!existing || result.relevance > existing.relevance) {
-            map.set(result.url, result);
-          }
-          return map;
-        }, new Map<string, SearchResultWithRelevance>())
-        .values()
-    )
+    // Log all results before filtering
+    logger.info(
+      "Search",
+      `Total results before filtering: ${allResults.length}`
+    );
+    allResults.forEach((r, index) => {
+      logger.info("Search", `Result ${index + 1} URL: ${r.url}`);
+    });
+
+    // Filter results to ensure they are from the correct domain
+    const filteredResults = allResults.filter((r) => r.url.startsWith(url));
+    logger.info("Search", `Filtered results count: ${filteredResults.length}`);
+
+    // Sort results by relevance and take top results
+    const topResults = filteredResults
       .sort((a, b) => b.relevance - a.relevance)
       .slice(0, limit);
 
-    logger.info("Search", `Returning ${uniqueResults.length} unique results`);
+    logger.info("Search", `Returning ${topResults.length} top results`);
 
-    // Format final results
-    return uniqueResults.map((result: SearchResultWithRelevance) => ({
-      ...formatSearchResult(result),
-      matchedQueries: queries.filter((q) => {
-        // Check if content matches query or its key terms
-        const content = result.content.toLowerCase();
-        const query = q.toLowerCase();
+    // Extract relevant chunks and format final results
+    return topResults.map((result: SearchResultWithRelevance) => {
+      const relevantChunk = extractRelevantChunk(result.content, queries);
+      return {
+        ...formatSearchResult({ ...result, content: relevantChunk }),
+        matchedQueries: queries.filter((q) => {
+          // Check if content matches query or its key terms
+          const content = relevantChunk.toLowerCase();
+          const query = q.toLowerCase();
 
-        // Split query into key terms and check each
-        const terms = query.split(/\s+/).filter((term) => term.length > 3);
-        return terms.some((term) => content.includes(term));
-      }),
-    }));
+          // Split query into key terms and check each
+          const terms = query.split(/\s+/).filter((term) => term.length > 3);
+          return terms.some((term) => content.includes(term));
+        }),
+      };
+    });
   } catch (error: unknown) {
     const errorMessage = error instanceof Error ? error.message : String(error);
     logger.error("Search", `Operation failed: ${errorMessage}`);
@@ -200,6 +231,42 @@ export async function handleSearchWebsite(args: {
       `Search operation failed: ${errorMessage}`
     );
   }
+}
+
+function extractRelevantChunk(content: string, queries: string[]): string {
+  const maxChunkSize = 1500; // Adjust this value as needed
+  const sentences = content.match(/[^.!?]+[.!?]+/g) || [];
+  let bestChunk = "";
+  let bestScore = 0;
+
+  for (let i = 0; i < sentences.length; i++) {
+    let chunk = "";
+    let j = i;
+    while (
+      j < sentences.length &&
+      chunk.length + sentences[j].length <= maxChunkSize
+    ) {
+      chunk += sentences[j] + " ";
+      j++;
+    }
+
+    const score = queries.reduce((acc, query) => {
+      const terms = query
+        .toLowerCase()
+        .split(/\s+/)
+        .filter((term) => term.length > 3);
+      return (
+        acc + terms.filter((term) => chunk.toLowerCase().includes(term)).length
+      );
+    }, 0);
+
+    if (score > bestScore) {
+      bestScore = score;
+      bestChunk = chunk.trim();
+    }
+  }
+
+  return bestChunk || content.slice(0, maxChunkSize);
 }
 
 /**
@@ -286,10 +353,28 @@ export async function handleSearchExistingData(args: {
       )}"`
     );
 
+    // Enhanced logging for debugging
+    logger.info("Search", `Search URL: ${url || "Not specified"}`);
+    logger.info("Search", `Search limit: ${limit}`);
+
     // If URL is provided, check if it exists in our data
+    let websiteDir = null;
     if (url) {
-      const websiteDir = getWebsiteDirectory(url);
+      websiteDir = getWebsiteDirectory(url);
+      logger.info("Search", `Website directory: ${websiteDir || "Not found"}`);
+
       if (!websiteDir) {
+        logger.info("Search", `Website ${url} not found in: ${WEBSITES_DIR}`);
+
+        // List all available websites for debugging
+        const availableWebsites = await listCrawledWebsites();
+        logger.info(
+          "Search",
+          `Available websites: ${availableWebsites
+            .map((w) => w.url)
+            .join(", ")}`
+        );
+
         throw new McpError(
           ErrorCode.InvalidParams,
           `Website ${url} has not been crawled yet. Use search_website tool first.`

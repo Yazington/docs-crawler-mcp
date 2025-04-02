@@ -4,12 +4,12 @@ import { OpenAI } from "openai";
 import { INDEX_DIR, ensureDirectory, logger } from "./utils.js";
 
 // Types
-export interface DocumentData {
+export interface DocumentChunk {
   id: string;
   url: string;
   title: string;
   content: string;
-  embedding?: number[];
+  embedding: number[];
 }
 
 export interface SearchResult {
@@ -18,6 +18,7 @@ export interface SearchResult {
   title: string;
   content: string;
   distance: number;
+  chunkIndex: number;
 }
 
 // The IndexDatabase is a simple alternative to the vector database
@@ -105,29 +106,15 @@ export class IndexDatabase {
   /**
    * Create embeddings for text, handling chunking if needed
    */
-  private async createEmbedding(text: string): Promise<number[]> {
+  private async createEmbeddings(text: string): Promise<number[][]> {
     if (!this.openai) {
       throw new Error("OpenAI client not initialized");
     }
 
-    const openai = this.openai; // Store reference to avoid null checks
+    const openai = this.openai;
+    const chunks = this.splitIntoChunks(text);
 
     try {
-      // Split text into chunks if it's too long
-      const chunks = this.splitIntoChunks(text);
-
-      // If only one chunk, process normally
-      if (chunks.length === 1) {
-        const response = await openai.embeddings.create({
-          model: this.embeddingModel,
-          input: chunks[0],
-          dimensions: 1536,
-        });
-        return response.data[0].embedding;
-      }
-
-      // For multiple chunks, get embeddings for each and average them
-      console.error(`[IndexDB] Text split into ${chunks.length} chunks`);
       const embeddings = await Promise.all(
         chunks.map(async (chunk) => {
           const response = await openai.embeddings.create({
@@ -139,19 +126,10 @@ export class IndexDatabase {
         })
       );
 
-      // Average the embeddings
-      const averageEmbedding = new Array(1536).fill(0);
-      for (const embedding of embeddings) {
-        for (let i = 0; i < embedding.length; i++) {
-          averageEmbedding[i] += embedding[i] / embeddings.length;
-        }
-      }
-
-      return averageEmbedding;
+      return embeddings;
     } catch (error) {
-      console.error("[IndexDB] Error creating embedding:", error);
-      // Return a placeholder embedding in case of failure
-      return new Array(1536).fill(0);
+      console.error("[IndexDB] Error creating embeddings:", error);
+      return chunks.map(() => new Array(1536).fill(0));
     }
   }
 
@@ -161,11 +139,12 @@ export class IndexDatabase {
   public async indexDocuments(sourceDir: string): Promise<number> {
     console.error(`[IndexDB] Indexing documents from ${sourceDir}`);
 
-    // Get all JSON files from directory
     const absoluteSourceDir = path.resolve(process.cwd(), sourceDir);
+
+    // Check for both .json and .jsonX files
     const files = fs
       .readdirSync(absoluteSourceDir)
-      .filter((file) => file.endsWith(".json"));
+      .filter((file) => file.endsWith(".json") || file.endsWith(".jsonX"));
 
     if (files.length === 0) {
       console.error("[IndexDB] No JSON files found in directory");
@@ -174,64 +153,73 @@ export class IndexDatabase {
 
     console.error(`[IndexDB] Found ${files.length} JSON files to process`);
 
-    // Process files in batches (to avoid memory issues)
-    const batchSize = 10;
     let totalProcessed = 0;
 
-    for (let i = 0; i < files.length; i += batchSize) {
-      const batch = files.slice(i, i + batchSize);
-      const chunkPromises = batch.map(async (file) => {
-        const filePath = path.join(absoluteSourceDir, file);
+    for (const file of files) {
+      const filePath = path.join(absoluteSourceDir, file);
+      try {
+        const fileContent = fs.readFileSync(filePath, "utf8");
+        let document;
         try {
-          const fileContent = fs.readFileSync(filePath, "utf8");
-          const document = JSON.parse(fileContent);
-
-          // Skip empty content
-          if (!document.content || document.content.trim() === "") {
-            return null;
+          // Handle potential JSON formatting issues
+          document = JSON.parse(fileContent);
+        } catch (parseError) {
+          console.error(`[IndexDB] Error parsing JSON in ${file}:`, parseError);
+          // Try to fix common JSON issues - missing opening brace
+          if (fileContent.trim().startsWith('"')) {
+            try {
+              document = JSON.parse(`{${fileContent}}`);
+              console.error(`[IndexDB] Fixed JSON format for ${file}`);
+            } catch (e) {
+              console.error(`[IndexDB] Failed to fix JSON in ${file}:`, e);
+              continue;
+            }
+          } else {
+            continue;
           }
-
-          // Create embedding for the document
-          const embedding = await this.createEmbedding(document.content);
-
-          // Create a document data object
-          const documentData: DocumentData = {
-            id: document.url || file.replace(".json", ""),
-            url: document.url || "",
-            title: document.title || "Untitled",
-            content: document.content,
-            embedding: embedding,
-          };
-
-          // Save to the index
-          const indexPath = path.join(
-            this.indexDir,
-            `${path.basename(file, ".json")}.index.json`
-          );
-          await fs.promises.writeFile(
-            indexPath,
-            JSON.stringify(documentData, null, 2)
-          );
-
-          return documentData;
-        } catch (error) {
-          console.error(`[IndexDB] Error processing file ${file}:`, error);
-          return null;
         }
-      });
 
-      // Wait for batch to complete
-      const results = await Promise.all(chunkPromises);
-      const validResults = results.filter((r) => r !== null);
-      totalProcessed += validResults.length;
+        if (!document.content || document.content.trim() === "") {
+          console.error(`[IndexDB] No content found in ${file}`);
+          continue;
+        }
 
-      console.error(
-        `[IndexDB] Indexed batch of ${validResults.length} documents (total: ${totalProcessed})`
-      );
+        const chunks = this.splitIntoChunks(document.content);
+        const embeddings = await this.createEmbeddings(document.content);
+
+        const documentChunks: DocumentChunk[] = chunks.map((chunk, index) => ({
+          id: `${document.url || file.replace(".json", "")}_chunk_${index}`,
+          url: document.url || "",
+          title: document.title || "Untitled",
+          content: chunk,
+          embedding: embeddings[index],
+        }));
+
+        // Handle both .json and .jsonX extensions for index path generation
+        const baseFileName = file.endsWith(".jsonX")
+          ? path.basename(file, ".jsonX")
+          : path.basename(file, ".json");
+
+        const indexPath = path.join(
+          this.indexDir,
+          `${baseFileName}.index.json`
+        );
+        await fs.promises.writeFile(
+          indexPath,
+          JSON.stringify(documentChunks, null, 2)
+        );
+
+        totalProcessed += documentChunks.length;
+        console.error(
+          `[IndexDB] Indexed ${documentChunks.length} chunks for ${file}`
+        );
+      } catch (error) {
+        console.error(`[IndexDB] Error processing file ${file}:`, error);
+      }
     }
 
     console.error(
-      `[IndexDB] Indexing complete. Total documents indexed: ${totalProcessed}`
+      `[IndexDB] Indexing complete. Total chunks indexed: ${totalProcessed}`
     );
     return totalProcessed;
   }
@@ -266,73 +254,140 @@ export class IndexDatabase {
    */
   public async search(
     query: string,
-    limit: number = 5
+    limit: number = 5,
+    baseUrl?: string
   ): Promise<SearchResult[]> {
-    console.error(`[IndexDB] Searching for: "${query}"`);
+    console.error(
+      `[IndexDB] Searching for: "${query}" with base URL: ${
+        baseUrl || "Not specified"
+      }`
+    );
 
-    // Create embedding for the query
-    const queryEmbedding = await this.createEmbedding(query);
-
-    // Get all indexed documents
     try {
+      // Generate embeddings with error handling
+      let queryEmbedding;
+      try {
+        queryEmbedding = await this.createEmbeddings(query);
+        if (
+          !queryEmbedding ||
+          !Array.isArray(queryEmbedding) ||
+          queryEmbedding.length === 0
+        ) {
+          console.error(
+            "[IndexDB] Failed to create valid embeddings for the query"
+          );
+          return [];
+        }
+      } catch (error) {
+        console.error(
+          "[IndexDB] Error creating embeddings for search query:",
+          error
+        );
+        return [];
+      }
+
       const indexFiles = fs
         .readdirSync(this.indexDir)
         .filter((file) => file.endsWith(".index.json"));
 
       console.error(`[IndexDB] Found ${indexFiles.length} indexed documents`);
 
-      // If no documents, return empty result
       if (indexFiles.length === 0) {
         return [];
       }
 
-      // Load all documents and calculate similarities
-      const documents: Array<DocumentData & { similarity: number }> = [];
+      const allChunks: Array<DocumentChunk & { similarity: number }> = [];
 
       for (const file of indexFiles) {
         try {
           const filePath = path.join(this.indexDir, file);
           const fileContent = fs.readFileSync(filePath, "utf8");
-          const doc = JSON.parse(fileContent) as DocumentData;
+          let chunks;
 
-          // Skip if no embedding
-          if (!doc.embedding || !Array.isArray(doc.embedding)) {
+          try {
+            chunks = JSON.parse(fileContent) as DocumentChunk[];
+
+            // Validate chunks is an array
+            if (!Array.isArray(chunks)) {
+              console.error(
+                `[IndexDB] Invalid chunks format in ${file}, expected array but got ${typeof chunks}`
+              );
+              continue;
+            }
+          } catch (parseError) {
+            console.error(
+              `[IndexDB] Error parsing index file ${file}:`,
+              parseError
+            );
             continue;
           }
 
-          // Calculate similarity
-          const similarity = this.computeCosineSimilarity(
-            queryEmbedding,
-            doc.embedding
-          );
+          for (const chunk of chunks) {
+            // Skip if chunk doesn't have required properties
+            if (
+              !chunk.url ||
+              !chunk.embedding ||
+              !Array.isArray(chunk.embedding)
+            ) {
+              continue;
+            }
 
-          documents.push({
-            ...doc,
-            similarity,
-          });
-        } catch (error) {
-          console.error(`[IndexDB] Error processing file ${file}:`, error);
-          continue;
+            // Skip if not matching baseUrl filter
+            if (baseUrl && !chunk.url.startsWith(baseUrl)) {
+              continue;
+            }
+
+            try {
+              const similarity = this.computeCosineSimilarity(
+                queryEmbedding[0],
+                chunk.embedding
+              );
+
+              allChunks.push({
+                ...chunk,
+                similarity,
+                // Ensure these properties exist
+                title: chunk.title || "Untitled",
+                content: chunk.content || "",
+              });
+            } catch (simError) {
+              console.error(
+                `[IndexDB] Error computing similarity for chunk:`,
+                simError
+              );
+            }
+          }
+        } catch (fileError) {
+          console.error(
+            `[IndexDB] Error processing index file ${file}:`,
+            fileError
+          );
         }
       }
 
-      // Sort by similarity (highest first) and take top results
-      const topResults = documents
+      const topResults = allChunks
         .sort((a, b) => b.similarity - a.similarity)
         .slice(0, limit);
 
-      // Convert to SearchResult format
-      const searchResults: SearchResult[] = topResults.map((doc) => ({
-        id: doc.id,
-        url: doc.url,
-        title: doc.title,
-        content: doc.content,
-        distance: 1 - doc.similarity, // Convert similarity to distance
+      const searchResults: SearchResult[] = topResults.map((chunk, index) => ({
+        id: chunk.id,
+        url: chunk.url,
+        title: chunk.title,
+        content: chunk.content,
+        distance: 1 - chunk.similarity,
+        chunkIndex: index,
       }));
 
       console.error(
         `[IndexDB] Search returned ${searchResults.length} results`
       );
+      searchResults.forEach((result, index) => {
+        console.error(
+          `[IndexDB] Result ${index + 1}: ${result.url} (distance: ${
+            result.distance
+          }, chunk: ${result.chunkIndex})`
+        );
+      });
       return searchResults;
     } catch (error) {
       console.error("[IndexDB] Error searching index:", error);
