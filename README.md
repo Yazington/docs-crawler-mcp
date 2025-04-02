@@ -19,7 +19,7 @@ A powerful documentation website crawler and semantic search tool that helps you
 
 - **Intelligent Website Crawling**: Automatically crawls documentation websites while respecting site structure and rate limits
 - **Smart Content Extraction**: Focuses on meaningful documentation content while filtering out navigation and boilerplate
-- **Semantic Search**: Uses vector-based search to find relevant content even with different phrasing
+- **Semantic Search**: Uses vector-based search to find relevant content even with different phrasing (on disks)
 - **Multi-Query Search**: Supports multiple diverse queries to get comprehensive results
 - **Persistent Storage**: Caches crawled content for efficient reuse and quick searches
 - **Deduplication**: Intelligently combines and ranks results from multiple queries
