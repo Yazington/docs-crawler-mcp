@@ -1,3 +1,5 @@
+![alt text](image-1.png)
+
 # docs-crawler-mcp MCP Server
 
 A powerful documentation website crawler and semantic search tool that helps you efficiently extract, index, and search through documentation content.
@@ -11,7 +13,94 @@ A powerful documentation website crawler and semantic search tool that helps you
 - **Persistent Storage**: Caches crawled content for efficient reuse and quick searches
 - **Deduplication**: Intelligently combines and ranks results from multiple queries
 
-## Tools
+## Setup for Cline
+
+1. Create a new directory for your MCP server:
+
+```bash
+mkdir docs-crawler-mcp
+cd docs-crawler-mcp
+```
+
+2. Initialize a new TypeScript project:
+
+```bash
+npm init -y
+npm install typescript @types/node --save-dev
+npx tsc --init
+```
+
+3. Install the MCP SDK and required dependencies:
+
+```bash
+npm install @modelcontextprotocol/sdk
+```
+
+4. Configure your `tsconfig.json`:
+
+```json
+{
+  "compilerOptions": {
+    "target": "ES2020",
+    "module": "ES2020",
+    "moduleResolution": "node",
+    "outDir": "./build",
+    "rootDir": "./src",
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true
+  },
+  "include": ["src/**/*"],
+  "exclude": ["node_modules"]
+}
+```
+
+5. Add build scripts to `package.json`:
+
+```json
+{
+  "type": "module",
+  "scripts": {
+    "build": "tsc && node -e \"require('fs').chmodSync('build/index.js', '755')\"",
+    "watch": "tsc -w"
+  }
+}
+```
+
+6. Configure the MCP server in Cline's settings:
+
+On Windows, edit `%APPDATA%/Code/User/globalStorage/saoudrizwan.claude-dev/settings/cline_mcp_settings.json`:
+
+```json
+{
+  "mcpServers": {
+    "docs-crawler": {
+      "command": "node",
+      "args": ["C:/path/to/docs-crawler-mcp/build/index.js"],
+      "disabled": false,
+      "autoApprove": []
+    }
+  }
+}
+```
+
+On macOS, edit `~/Library/Application Support/Code/User/globalStorage/saoudrizwan.claude-dev/settings/cline_mcp_settings.json`:
+
+```json
+{
+  "mcpServers": {
+    "docs-crawler": {
+      "command": "node",
+      "args": ["/path/to/docs-crawler-mcp/build/index.js"],
+      "disabled": false,
+      "autoApprove": []
+    }
+  }
+}
+```
+
+## Available Tools
 
 ### search_website
 
@@ -62,49 +151,7 @@ Search through already crawled content without new crawling:
 }
 ```
 
-## Installation
-
-To use with Claude Desktop, add the server config:
-
-On Windows:
-
-```json
-// %APPDATA%/Claude/claude_desktop_config.json
-{
-  "mcpServers": {
-    "docs-crawler-mcp": {
-      "command": "/path/to/docs-crawler-mcp/build/index.js"
-    }
-  }
-}
-```
-
-On MacOS:
-
-```json
-// ~/Library/Application Support/Claude/claude_desktop_config.json
-{
-  "mcpServers": {
-    "docs-crawler-mcp": {
-      "command": "/path/to/docs-crawler-mcp/build/index.js"
-    }
-  }
-}
-```
-
 ## Development
-
-Install dependencies:
-
-```bash
-npm install
-```
-
-Build the server:
-
-```bash
-npm run build
-```
 
 For development with auto-rebuild:
 
@@ -122,45 +169,48 @@ npm run inspector
 
 This will provide a URL to access the debugging tools in your browser.
 
-## Usage Examples
+## Example Usage in Cline
 
-### Basic Website Search
+Once the server is set up and running, you can use it in Cline like this:
 
-```typescript
-// Search a documentation site with multiple queries
-const result = await server.callTool("search_website", {
-  url: "https://docs.example.com",
-  queries: [
-    "getting started guide",
-    "configuration options",
-    "troubleshooting errors",
-  ],
-});
+1. Search a documentation website:
+
+```
+Ask Cline: "Search the React documentation for information about hooks and state management"
 ```
 
-### Targeted Search in Existing Data
+2. View previously crawled sites:
 
-```typescript
-// Search previously crawled content
-const result = await server.callTool("search_existing_data", {
-  queries: ["authentication", "oauth flow"],
-  url: "https://api.example.com/docs", // Optional: limit to specific site
-  limit: 10,
-});
+```
+Ask Cline: "Show me all the documentation websites that have been crawled"
 ```
 
-### Update Stale Documentation
+3. Update stale documentation:
 
-```typescript
-// Force a fresh crawl of a site
-const result = await server.callTool("recrawl_website", {
-  url: "https://docs.example.com",
-});
+```
+Ask Cline: "Recrawl the Vue.js documentation to get the latest content"
 ```
 
-### View Crawled Sites
+4. Search existing content:
 
-```typescript
-// List all crawled websites with metadata
-const sites = await server.callTool("list_crawled_websites", {});
 ```
+Ask Cline: "Find information about authentication in the previously crawled documentation"
+```
+
+## Project Structure
+
+```
+docs-crawler-mcp/
+├── src/
+│   ├── index.ts        # Main entry point
+│   ├── server.ts       # MCP server implementation
+│   ├── tools.ts        # Tool implementations
+│   ├── crawler.ts      # Website crawler logic
+│   ├── index-db.ts     # Search indexing
+│   ├── types.ts        # TypeScript types
+│   └── utils.ts        # Utility functions
+├── package.json
+└── tsconfig.json
+```
+
+For more information about MCP servers and Cline integration, visit the [Cline MCP documentation](https://docs.cline.bot/mcp-servers/mcp).
