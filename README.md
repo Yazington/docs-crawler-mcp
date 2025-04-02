@@ -1,4 +1,15 @@
+## THINGS TO KEEP IN MIND:
+
+1. Please increase timeout for the server to crawl! use `"timeout": 300000` for example in `cline_mcp_settings.json`
+2. Use an OpenAI API key for embedding. Future releases will include local embedding model
+
+---
+
 ![alt text](image-1.png)
+
+![alt text](image-2.png)
+
+---
 
 # docs-crawler-mcp MCP Server
 
@@ -77,7 +88,13 @@ On Windows, edit `%APPDATA%/Code/User/globalStorage/saoudrizwan.claude-dev/setti
   "mcpServers": {
     "docs-crawler": {
       "command": "node",
-      "args": ["C:/path/to/docs-crawler-mcp/build/index.js"],
+      "args": [
+        "C:/Users/yazan/Documents/Cline/MCP/docs-crawler-mcp/build/index.js"
+      ],
+      "env": {
+        "OPENAI_API_KEY": "YOUR OPEN AI API KEY"
+      },
+      "timeout": 300000,
       "disabled": false,
       "autoApprove": []
     }
