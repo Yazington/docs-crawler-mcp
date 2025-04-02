@@ -333,8 +333,22 @@ export class IndexDatabase {
             }
 
             // Skip if not matching baseUrl filter
-            if (baseUrl && !chunk.url.startsWith(baseUrl)) {
-              continue;
+            if (baseUrl) {
+              // Normalize URLs for comparison by removing protocol and trailing slashes
+              const normalizeUrl = (url: string) => {
+                // Remove protocol (http:// or https://)
+                let normalized = url.replace(/^https?:\/\//, '');
+                // Remove trailing slash if present
+                normalized = normalized.replace(/\/$/, '');
+                return normalized;
+              };
+              
+              const normalizedBaseUrl = normalizeUrl(baseUrl);
+              const normalizedChunkUrl = normalizeUrl(chunk.url);
+              
+              if (!normalizedChunkUrl.startsWith(normalizedBaseUrl)) {
+                continue;
+              }
             }
 
             try {
