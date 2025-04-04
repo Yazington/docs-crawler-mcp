@@ -1,5 +1,0 @@
-add concurrency for crawling
-add an a proper vector DB
-add a better indexing and search strats!
-Rename tools to Add doc, Search doc and Update doc
-Indexing and search should be independent for each baseUrl webpage
