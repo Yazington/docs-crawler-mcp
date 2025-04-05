@@ -1,4 +1,5 @@
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import { multiQueryQdrantSearch } from "./data.js";
 
 import {
   CallToolRequestSchema,
@@ -28,15 +29,28 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
  * Handle tool invocations
  */
 server.setRequestHandler(CallToolRequestSchema, async (request) => {
-  if (request.params.name !== "Get online documentation") {
+  if (request.params.name === "Get online documentation") {
+    const { url, waitForSelector, queries } = crawlUrlArgsSchema.parse(
+      request.params.arguments
+    );
+    return crawlWebsite(url, waitForSelector, queries);
+  } else if (request.params.name === "Search documentation") {
+    const queriesSchema = z.object({
+      queries: z.array(z.string()),
+    });
+    const { queries } = queriesSchema.parse(request.params.arguments);
+
+    const results = await multiQueryQdrantSearch(queries, 5);
+
+    return {
+      content: results.map((r) => ({
+        type: "text",
+        text: r.payload.content,
+      })),
+    };
+  } else {
     throw new Error(`Unknown tool: ${request.params.name}`);
   }
-
-  const { url, waitForSelector, queries } = crawlUrlArgsSchema.parse(
-    request.params.arguments
-  );
-
-  return crawlWebsite(url, waitForSelector, queries);
 });
 
 /**

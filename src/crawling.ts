@@ -140,90 +140,113 @@ export async function crawlWebsite(
   url: string,
   waitForSelector?: string,
   queries?: string[]
-): Promise<{
-  content: { type: string; text: string }[];
-  isError?: boolean;
-}> {
+) {
   let browser: Browser | undefined;
-  let initialMarkdown = "";
   try {
     browser = await launchBrowser();
     const visited = new Set<string>();
-    const pagesCrawled = { count: 0 };
+    const toVisit = [url];
     const maxDepth = 2;
+    let currentDepth = 0;
     const maxPages = 500;
 
-    const result = await crawlSingleUrl(url, waitForSelector, browser);
-    initialMarkdown = result.markdown;
-    pagesCrawled.count++;
-    visited.add(url);
+    while (
+      toVisit.length &&
+      currentDepth <= maxDepth &&
+      visited.size < maxPages
+    ) {
+      // Grab up to 50 URLs at a time (example) to crawl in parallel
+      const batch = toVisit.splice(0, 50).filter((u) => !visited.has(u));
+      if (!batch.length) break;
 
-    for (const discoveredUrl of result.discoveredUrls) {
-      await crawlRecursive(
-        discoveredUrl,
+      // Mark them visited now so we don't add duplicates below
+      batch.forEach((b) => visited.add(b));
+
+      // Crawl in parallel
+      const results = await crawlUrlsConcurrently(
+        batch,
         waitForSelector,
         browser,
-        visited,
-        1,
-        maxDepth,
-        pagesCrawled,
-        maxPages
+        5
       );
+
+      // Collect discovered links
+      for (const result of results) {
+        if (!result.error) {
+          result.discoveredUrls.forEach((link) => {
+            if (!visited.has(link)) {
+              toVisit.push(link);
+            }
+          });
+        }
+      }
+      currentDepth++;
     }
 
-    await browser.close();
-
-    if (queries && Array.isArray(queries) && queries.length > 0) {
-      try {
-        const results = await multiQueryQdrantSearch(queries, 5);
-
-        return {
-          content: results.map((r) => ({
-            type: "text",
-            text: r.payload.content,
-          })),
-        };
-      } catch (searchError) {
-        return {
-          content: [
-            {
-              type: "text",
-              text: `Error during Qdrant search: ${
-                searchError instanceof Error
-                  ? searchError.message
-                  : String(searchError)
-              }`,
-            },
-          ],
-          isError: true,
-        };
-      }
+    // (Optional) If `queries` was provided, do a Qdrant multi-search
+    if (queries && queries.length > 0) {
+      const results = await multiQueryQdrantSearch(queries, 5);
+      return {
+        content: results.map((r) => ({
+          type: "text",
+          text: r.payload.content,
+        })),
+      };
     } else {
+      // Return something from the initial page if needed
       return {
         content: [
           {
             type: "text",
-            text: initialMarkdown,
+            text: "Crawling complete. Check Qdrant for embedded data.",
           },
         ],
       };
     }
   } catch (error) {
-    if (browser) {
-      try {
-        await browser.close();
-      } catch {}
-    }
     return {
       content: [
         {
           type: "text",
-          text: `Error crawling URL: ${
+          text: `Error: ${
             error instanceof Error ? error.message : String(error)
           }`,
         },
       ],
       isError: true,
     };
+  } finally {
+    if (browser) {
+      await browser.close().catch(() => {});
+    }
   }
+}
+
+async function crawlUrlsConcurrently(
+  urls: string[],
+  waitForSelector: string | undefined,
+  browser: Browser,
+  concurrency = 5
+) {
+  const results = [];
+
+  // We'll process in batches of `concurrency`.
+  for (let i = 0; i < urls.length; i += concurrency) {
+    const chunk = urls.slice(i, i + concurrency);
+    // Launch each crawlSingleUrl call in parallel
+    const chunkPromises = chunk.map((url) =>
+      crawlSingleUrl(url, waitForSelector, browser)
+        .then((res) => {
+          console.log("Done crawling:", url);
+          return { url, ...res, error: null };
+        })
+        .catch((error) => {
+          console.error("Error crawling:", url, error);
+          return { url, markdown: "", discoveredUrls: [], error };
+        })
+    );
+    const chunkResults = await Promise.all(chunkPromises);
+    results.push(...chunkResults);
+  }
+  return results;
 }

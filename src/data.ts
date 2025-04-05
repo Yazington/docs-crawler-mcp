@@ -172,40 +172,31 @@ export async function saveChunksToQdrant(
   await loadEmbedder();
 
   const chunks = chunkMarkdownSlidingWindow(markdown);
-  const points = [];
+  // Build the list of vectors/points
+  const chunkEmbeddings = await Promise.all(
+    chunks.map((chunkText) => embedChunk(chunkText))
+  );
+  const allPoints = chunkEmbeddings.map((embedding, idx) => ({
+    id: crypto.randomUUID(),
+    vector: embedding,
+    payload: {
+      url,
+      chunk_id: `${url}#chunk-${idx}`,
+      content: chunks[idx],
+      timestamp: timestamp.toISOString(),
+    },
+  }));
 
-  for (let idx = 0; idx < chunks.length; idx++) {
-    const chunkText = chunks[idx];
-    const embedding = await embedChunk(chunkText);
-
-    // console.error(
-    //   "Embedding shape/type for chunk",
-    //   idx,
-    //   ":",
-    //   Array.isArray(embedding),
-    //   "length:",
-    //   embedding.length,
-    //   "sample:",
-    //   embedding.slice(0, 5)
-    // );
-
-    const chunkId = `${url}#chunk-${idx}`;
-
-    points.push({
-      id: crypto.randomUUID(),
-      vector: embedding,
-      payload: {
-        url,
-        chunk_id: chunkId,
-        content: chunkText,
-        timestamp: timestamp.toISOString(),
-      },
-    });
-  }
-
-  try {
-    await qdrant.upsert(COLLECTION_NAME, { points });
-  } catch (err) {
-    console.error("Error upserting to Qdrant:", err);
+  // Optionally split into batches of e.g. 20
+  const BATCH_SIZE = 20;
+  for (let i = 0; i < allPoints.length; i += BATCH_SIZE) {
+    const batch = allPoints.slice(i, i + BATCH_SIZE);
+    try {
+      console.log(`Upserting batch from index ${i}...`);
+      await qdrant.upsert(COLLECTION_NAME, { points: batch });
+    } catch (err) {
+      console.error("Error upserting to Qdrant:", err);
+      // You could either continue or break out here, depending on your needs
+    }
   }
 }

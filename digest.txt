@@ -1,0 +1,1001 @@
+Directory structure:
+└── docs-crawler-mcp/
+    ├── README.md
+    ├── package.json
+    ├── tsconfig.json
+    ├── scripts/
+    │   ├── list_qdrant.js
+    │   └── reset_qdrant.js
+    └── src/
+        ├── browser.ts
+        ├── crawling.ts
+        ├── data.ts
+        ├── index.ts
+        ├── server.ts
+        └── tools.ts
+
+================================================
+File: README.md
+================================================
+# Quasar Crawler MCP Server
+
+An MCP server that crawls documentation websites, converts them to Markdown, and stores embeddings in Qdrant for intelligent, up-to-date documentation search.
+
+---
+
+## Features
+
+- **Crawl documentation sites** using Puppeteer
+- **Convert HTML to Markdown** with jsdom and turndown
+- **Generate embeddings** with Transformers
+- **Store and search embeddings** in Qdrant vector database
+- **Expose MCP resources and tools** for integration with other systems
+
+---
+
+## Installation
+
+Clone the repository and install dependencies:
+
+```bash
+npm install
+```
+
+Build the project:
+
+```bash
+npm run build
+```
+
+---
+
+## Usage
+
+Configure this server as an MCP server (e.g., in Claude Desktop configuration):
+
+```json
+{
+  "mcpServers": {
+    "quasar-crawler": {
+      "command": "/path/to/quasar-crawler/build/index.js"
+    }
+  }
+}
+```
+
+Run the built server binary, then use the provided MCP tools and resources to crawl and query documentation content.
+
+---
+
+## Development
+
+For active development with auto-rebuild:
+
+```bash
+npm run watch
+```
+
+Available scripts:
+
+- `build` - Compile the TypeScript source
+- `watch` - Rebuild on file changes
+- `inspector` - Launch MCP Inspector for debugging
+
+---
+
+## Debugging
+
+Use the [MCP Inspector](https://github.com/modelcontextprotocol/inspector) to debug server communication:
+
+```bash
+npm run inspector
+```
+
+This will provide a URL to access debugging tools in your browser.
+
+---
+
+## Dependencies
+
+- [@modelcontextprotocol/sdk](https://github.com/modelcontextprotocol/sdk)
+- [@qdrant/js-client-rest](https://github.com/qdrant/qdrant-js)
+- [@xenova/transformers](https://github.com/xenova/transformers.js)
+- [puppeteer](https://pptr.dev/)
+- [jsdom](https://github.com/jsdom/jsdom)
+- [turndown](https://github.com/mixmark-io/turndown)
+- [zod](https://github.com/colinhacks/zod)
+
+---
+
+
+================================================
+File: package.json
+================================================
+{
+  "name": "quasar-crawler",
+  "version": "0.1.0",
+  "description": "Crawling + Qdrant intelligent up to date docs",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "quasar-crawler": "./build/index.js"
+  },
+  "files": [
+    "build"
+  ],
+  "scripts": {
+    "build": "tsc && node -e \"require('fs').chmodSync('build/index.js', '755')\"",
+    "prepare": "npm run build",
+    "watch": "tsc --watch",
+    "inspector": "npx @modelcontextprotocol/inspector build/index.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "0.6.0",
+    "@qdrant/js-client-rest": "^1.13.0",
+    "@xenova/transformers": "^2.17.2",
+    "jsdom": "^26.0.0",
+    "puppeteer": "^24.6.0",
+    "turndown": "^7.2.0",
+    "zod": "^3.24.2"
+  },
+  "devDependencies": {
+    "@types/jsdom": "^21.1.7",
+    "@types/node": "^20.11.24",
+    "@types/turndown": "^5.0.5",
+    "dom-to-semantic-markdown": "^1.3.0",
+    "typescript": "^5.3.3"
+  }
+}
+
+
+================================================
+File: tsconfig.json
+================================================
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "Node16",
+    "moduleResolution": "Node16",
+    "outDir": "./build",
+    "rootDir": "./src",
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true
+  },
+  "include": ["src/**/*"],
+  "exclude": ["node_modules"]
+}
+
+
+================================================
+File: scripts/list_qdrant.js
+================================================
+import { QdrantClient } from "@qdrant/js-client-rest";
+
+const qdrant = new QdrantClient({ url: "http://localhost:6333" });
+const COLLECTION_NAME = "docs_chunks";
+
+async function listQdrantPoints() {
+  try {
+    const response = await qdrant.scroll(COLLECTION_NAME, {
+      limit: 10,
+      with_payload: true,
+      with_vector: false, // omit vectors for brevity
+    });
+
+    console.log(
+      `Found ${response.points.length} points in "${COLLECTION_NAME}":\n`
+    );
+
+    for (const point of response.points) {
+      console.log(`ID: ${point.id}`);
+      console.log(`Payload: ${JSON.stringify(point.payload, null, 2)}\n`);
+    }
+  } catch (err) {
+    console.error("Error listing Qdrant points:", err);
+  }
+}
+
+listQdrantPoints();
+
+
+================================================
+File: scripts/reset_qdrant.js
+================================================
+import { QdrantClient } from "@qdrant/js-client-rest";
+
+const qdrant = new QdrantClient({ url: "http://localhost:6333" });
+const COLLECTION_NAME = "docs_chunks";
+
+async function resetQdrantCollection() {
+  try {
+    console.log(`Deleting collection "${COLLECTION_NAME}"...`);
+    await qdrant.deleteCollection(COLLECTION_NAME);
+  } catch (err) {
+    console.warn(
+      `Warning: Could not delete collection (may not exist):`,
+      err.message
+    );
+  }
+
+  console.log(`Creating collection "${COLLECTION_NAME}"...`);
+  await qdrant.createCollection(COLLECTION_NAME, {
+    vectors: {
+      size: 384, // embedding dimension for MiniLM
+      distance: "Cosine",
+    },
+  });
+
+  console.log(`Collection "${COLLECTION_NAME}" has been reset.`);
+}
+
+resetQdrantCollection().catch((err) => {
+  console.error("Error resetting Qdrant collection:", err);
+});
+
+
+================================================
+File: src/browser.ts
+================================================
+/**
+ * Puppeteer-based web crawler module.
+ *
+ * This module provides functions to:
+ * - Launch a headless browser instance
+ * - Navigate to URLs and wait for specific elements
+ * - Extract and convert page content to Markdown, filtering unwanted elements
+ * - Extract all internal links from a page
+ * - Recursively crawl discovered URLs with configurable depth and page limits
+ * - Save crawled content to disk
+ *
+ * It is designed to crawl documentation websites or similar content-rich sites,
+ * converting relevant HTML content into Markdown format for further processing.
+ */
+
+import puppeteer from "puppeteer";
+import TurndownService from "turndown";
+
+import { Browser } from "puppeteer";
+
+/**
+ * Launches a new headless Puppeteer browser instance with sandbox disabled.
+ *
+ * @returns {Promise<Browser>} A Promise resolving to the launched Browser instance.
+ */
+export async function launchBrowser(): Promise<Browser> {
+  return puppeteer.launch({
+    headless: true,
+    args: ["--no-sandbox", "--disable-setuid-sandbox"],
+  });
+}
+
+/**
+ * Navigates the given Puppeteer page to the specified URL.
+ * Optionally waits for a CSS selector to appear before proceeding.
+ *
+ * @param {puppeteer.Page} page - The Puppeteer page instance to navigate.
+ * @param {string} url - The URL to navigate to.
+ * @param {string} [waitForSelector] - Optional CSS selector to wait for after navigation.
+ * @returns {Promise<void>} Resolves when navigation (and optional wait) completes.
+ * @throws Will throw if navigation or waiting times out or fails.
+ */
+export async function navigateAndWait(
+  page: puppeteer.Page,
+  url: string,
+  waitForSelector?: string
+): Promise<void> {
+  await page.goto(url, { waitUntil: "domcontentloaded", timeout: 30000 });
+
+  if (waitForSelector && typeof waitForSelector === "string") {
+    await page.waitForSelector(waitForSelector, { timeout: 15000 });
+  }
+}
+
+/**
+ * Extracts the main content of the page, filters out unwanted elements,
+ * and converts the remaining HTML into Markdown format.
+ *
+ * @param {puppeteer.Page} page - The Puppeteer page instance.
+ * @returns {Promise<string>} The extracted content converted to Markdown.
+ */
+export async function extractMarkdown(page: puppeteer.Page): Promise<string> {
+  const filteredContent = await filterUnwantedElements(page);
+  const turndownService = new TurndownService();
+  return turndownService.turndown(filteredContent);
+}
+
+/**
+ * Internal helper that filters out unwanted elements from the page DOM,
+ * such as navigation bars, ads, footers, and scripts.
+ * Returns a string of concatenated HTML of relevant content elements.
+ *
+ * @param {puppeteer.Page} page - The Puppeteer page instance.
+ * @returns {Promise<string>} Filtered HTML content as a string.
+ */
+async function filterUnwantedElements(page: puppeteer.Page): Promise<string> {
+  return await page.evaluate(() => {
+    // Remove all <script>, <style>, <noscript> tags
+    document
+      .querySelectorAll("script, style, noscript")
+      .forEach((el) => el.remove());
+
+    // Remove unwanted UI/navigation elements
+    const unwantedSelectors = [
+      "nav",
+      "footer",
+      "aside",
+      ".navbar",
+      ".sidebar",
+      ".menu",
+      ".search",
+      ".breadcrumb",
+      ".toc",
+      ".ad",
+      ".banner",
+      ".toolbar",
+      ".btn",
+      ".button",
+      ".pagination",
+      ".header",
+      ".top-nav",
+      ".side-nav",
+      ".skip-link",
+      ".skip-to-content",
+      ".logo",
+      ".brand",
+      ".copyright",
+      ".legal",
+      ".cookie",
+      ".consent",
+      ".newsletter",
+      ".subscribe",
+      ".share",
+      ".related",
+      ".comments",
+      ".comment",
+      ".disclaimer",
+      ".note",
+      ".alert",
+      ".warning",
+      ".info",
+      ".notification",
+      ".promo",
+      ".announcement",
+      ".social",
+    ];
+    unwantedSelectors.forEach((selector) => {
+      document.querySelectorAll(selector).forEach((el) => el.remove());
+    });
+
+    // Whitelist content elements
+    const contentElements = document.querySelectorAll(
+      "h1, h2, h3, h4, h5, h6, p, pre, code, article, section, table"
+    );
+    return Array.from(contentElements)
+      .map((el) => el.outerHTML)
+      .join("\n");
+  });
+}
+
+/**
+ * Extracts all unique HTTP(S) URLs on the page that belong to the same origin as the provided base URL.
+ *
+ * This includes:
+ * - All relative links (resolved against the base URL)
+ * - All absolute links with the same origin (protocol + hostname + port)
+ *
+ * The function:
+ * - Deduplicates URLs (returns unique entries only)
+ * - Excludes links with non-http(s) protocols (e.g., mailto:, tel:, javascript:)
+ * - Skips empty, whitespace-only, or malformed hrefs
+ *
+ * @param {string} url - The base URL to resolve relative links and compare origins.
+ * @param {puppeteer.Page} page - The Puppeteer page instance.
+ * @returns {Promise<string[]>} Promise resolving to an array of absolute URLs as strings.
+ */
+export async function extractAllUrlsWithSameBaseUrl(
+  url: string,
+  page: puppeteer.Page
+): Promise<string[]> {
+  const baseOrigin = new URL(url).origin;
+
+  const links = await page.evaluate(() => {
+    const anchorElements = Array.from(document.querySelectorAll("a[href]"));
+    return anchorElements.map(
+      (a) => (a as HTMLAnchorElement).getAttribute("href") || ""
+    );
+  });
+
+  const uniqueUrls = new Set<string>();
+
+  for (const href of links) {
+    const trimmedHref = href.trim();
+    if (!trimmedHref) continue; // skip empty hrefs
+
+    let resolvedUrl: URL;
+    try {
+      resolvedUrl = new URL(trimmedHref, url);
+    } catch {
+      continue; // skip invalid URLs
+    }
+
+    if (
+      (resolvedUrl.protocol === "http:" || resolvedUrl.protocol === "https:") &&
+      resolvedUrl.origin === baseOrigin
+    ) {
+      uniqueUrls.add(resolvedUrl.toString());
+    }
+  }
+
+  return Array.from(uniqueUrls);
+}
+
+
+================================================
+File: src/crawling.ts
+================================================
+import {
+  ChunkedLLMReadable,
+  saveContentToDisk,
+  chunkMarkdownSlidingWindow,
+  saveChunksToQdrant,
+  multiQueryQdrantSearch,
+} from "./data.js";
+import { Browser } from "puppeteer";
+import {
+  extractAllUrlsWithSameBaseUrl,
+  extractMarkdown,
+  launchBrowser,
+  navigateAndWait,
+} from "./browser.js";
+/**
+ * Crawls a single URL using an existing browser instance.
+ * - Navigates to the URL and waits for optional selector.
+ * - Extracts Markdown content.
+ * - Saves content to disk.
+ * - Extracts and returns discovered internal URLs.
+ *
+ * @param {string} url - The URL to crawl.
+ * @param {string | undefined} waitForSelector - Optional CSS selector to wait for.
+ * @param {Browser} browser - The Puppeteer Browser instance.
+ * @returns {Promise<{ markdown: string; discoveredUrls: string[] }>} The Markdown content and discovered URLs.
+ * @throws Will throw if navigation or extraction fails.
+ */
+export async function crawlSingleUrl(
+  url: string,
+  waitForSelector: string | undefined,
+  browser: Browser
+): Promise<{ markdown: string; discoveredUrls: string[] }> {
+  const page = await browser.newPage();
+  try {
+    await navigateAndWait(page, url, waitForSelector);
+    const markdown = await extractMarkdown(page);
+
+    const chunks = chunkMarkdownSlidingWindow(markdown);
+    const timestamp = new Date();
+
+    chunks.forEach((chunkText, idx) => {
+      const chunkData: ChunkedLLMReadable & { chunkId: string } = {
+        url,
+        content: chunkText,
+        timestamp,
+        chunkId: `${url}#chunk-${idx}`,
+      };
+      const chunkUrlForFile = `${url}__chunk${idx}`;
+      saveContentToDisk(chunkUrlForFile, chunkData);
+    });
+
+    // Save chunks and embeddings to Qdrant
+    await saveChunksToQdrant(url, markdown, timestamp);
+
+    const discoveredUrls = await extractAllUrlsWithSameBaseUrl(url, page);
+    await page.close();
+    return { markdown, discoveredUrls };
+  } catch (error) {
+    await page.close();
+    throw error;
+  }
+}
+
+/**
+ * Recursively crawls URLs discovered from the initial page, respecting depth and page limits.
+ *
+ * - Skips URLs already visited.
+ * - Stops recursion if max depth or max pages reached.
+ * - Saves content for each crawled page.
+ *
+ * @param {string} url - The URL to crawl.
+ * @param {string | undefined} waitForSelector - Optional CSS selector to wait for.
+ * @param {Browser} browser - The Puppeteer Browser instance.
+ * @param {Set<string>} visited - Set of already visited URLs.
+ * @param {number} depth - Current recursion depth.
+ * @param {number} maxDepth - Maximum allowed recursion depth.
+ * @param {{ count: number }} pagesCrawled - Object tracking total pages crawled.
+ * @param {number} maxPages - Maximum total pages to crawl.
+ * @returns {Promise<void>} Resolves when crawling completes or limits reached.
+ */
+export async function crawlRecursive(
+  url: string,
+  waitForSelector: string | undefined,
+  browser: Browser,
+  visited: Set<string>,
+  depth: number,
+  maxDepth: number,
+  pagesCrawled: { count: number },
+  maxPages: number
+): Promise<void> {
+  if (visited.has(url)) {
+    return;
+  }
+  if (depth > maxDepth) {
+    return;
+  }
+  if (pagesCrawled.count >= maxPages) {
+    return;
+  }
+
+  visited.add(url);
+
+  let result;
+  try {
+    result = await crawlSingleUrl(url, waitForSelector, browser);
+    pagesCrawled.count++;
+  } catch (error) {
+    console.error(`Error crawling ${url}:`, error);
+    return;
+  }
+
+  for (const discoveredUrl of result.discoveredUrls) {
+    if (!visited.has(discoveredUrl)) {
+      await crawlRecursive(
+        discoveredUrl,
+        waitForSelector,
+        browser,
+        visited,
+        depth + 1,
+        maxDepth,
+        pagesCrawled,
+        maxPages
+      );
+    }
+  }
+}
+
+/**
+ * Handles a crawl request for a given URL.
+ * - Launches a new browser instance.
+ * - Crawls the initial URL and discovered URLs recursively.
+ * - Saves content to disk.
+ * - Returns the initial page's Markdown content.
+ *
+ * @param {string} url - The initial URL to crawl.
+ * @param {string} [waitForSelector] - Optional CSS selector to wait for.
+ * @returns {Promise<{ content: { type: string; text: string }[]; isError?: boolean }>} The initial page's Markdown content, or error info.
+ */
+export async function crawlWebsite(
+  url: string,
+  waitForSelector?: string,
+  queries?: string[]
+): Promise<{
+  content: { type: string; text: string }[];
+  isError?: boolean;
+}> {
+  let browser: Browser | undefined;
+  let initialMarkdown = "";
+  try {
+    browser = await launchBrowser();
+    const visited = new Set<string>();
+    const pagesCrawled = { count: 0 };
+    const maxDepth = 2;
+    const maxPages = 500;
+
+    const result = await crawlSingleUrl(url, waitForSelector, browser);
+    initialMarkdown = result.markdown;
+    pagesCrawled.count++;
+    visited.add(url);
+
+    for (const discoveredUrl of result.discoveredUrls) {
+      await crawlRecursive(
+        discoveredUrl,
+        waitForSelector,
+        browser,
+        visited,
+        1,
+        maxDepth,
+        pagesCrawled,
+        maxPages
+      );
+    }
+
+    await browser.close();
+
+    if (queries && Array.isArray(queries) && queries.length > 0) {
+      try {
+        const results = await multiQueryQdrantSearch(queries, 5);
+
+        return {
+          content: results.map((r) => ({
+            type: "text",
+            text: r.payload.content,
+          })),
+        };
+      } catch (searchError) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: `Error during Qdrant search: ${
+                searchError instanceof Error
+                  ? searchError.message
+                  : String(searchError)
+              }`,
+            },
+          ],
+          isError: true,
+        };
+      }
+    } else {
+      return {
+        content: [
+          {
+            type: "text",
+            text: initialMarkdown,
+          },
+        ],
+      };
+    }
+  } catch (error) {
+    if (browser) {
+      try {
+        await browser.close();
+      } catch {}
+    }
+    return {
+      content: [
+        {
+          type: "text",
+          text: `Error crawling URL: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        },
+      ],
+      isError: true,
+    };
+  }
+}
+
+
+================================================
+File: src/data.ts
+================================================
+import os from "os";
+import fs from "fs";
+import path from "path";
+import crypto from "crypto";
+import { pipeline, Pipeline } from "@xenova/transformers";
+import { QdrantClient } from "@qdrant/js-client-rest";
+
+const qdrant = new QdrantClient({ url: "http://localhost:6333" });
+const COLLECTION_NAME = "docs_chunks";
+
+let embedder: any = null;
+
+/**
+ * Search Qdrant for similar vectors
+ * @param embedding The query embedding vector
+ * @param limit Number of results to return
+ * @returns Array of search results with payload and score
+ */
+export async function searchQdrantByEmbedding(
+  embedding: number[],
+  limit: number
+): Promise<
+  {
+    id: string;
+    score: number;
+    payload: Record<string, any>;
+  }[]
+> {
+  const results = await qdrant.search(COLLECTION_NAME, {
+    vector: embedding,
+    limit,
+    with_payload: true,
+  });
+
+  return results.map((r: any) => ({
+    id: r.id,
+    score: r.score,
+    payload: r.payload,
+  }));
+}
+
+/**
+ * Perform multi-query search, deduplicate, and sort results
+ * @param queries List of query strings
+ * @param perQueryLimit Number of results per query
+ * @returns Sorted, deduplicated search results
+ */
+export async function multiQueryQdrantSearch(
+  queries: string[],
+  perQueryLimit: number = 3
+): Promise<
+  {
+    id: string;
+    score: number;
+    payload: Record<string, any>;
+  }[]
+> {
+  await loadEmbedder();
+
+  const allResults: {
+    id: string;
+    score: number;
+    payload: Record<string, any>;
+  }[] = [];
+
+  for (const query of queries) {
+    const embedding = await embedChunk(query);
+    const results = await searchQdrantByEmbedding(embedding, perQueryLimit);
+    allResults.push(...results);
+  }
+
+  // Deduplicate by unique chunk_id or content hash
+  const seen = new Set<string>();
+  const uniqueResults = allResults.filter((r) => {
+    const key = r.payload.chunk_id || r.payload.content;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+
+  // Sort by descending score
+  uniqueResults.sort((a, b) => b.score - a.score);
+
+  return uniqueResults;
+}
+
+/**
+ * Loads the all-MiniLM-L6-v2 embedding model using @xenova/transformers.
+ * Call this once before generating embeddings.
+ */
+export async function loadEmbedder() {
+  if (!embedder) {
+    embedder = await pipeline("feature-extraction", "Xenova/all-MiniLM-L6-v2");
+  }
+}
+
+/**
+ * Generates an embedding vector for a given text chunk.
+ * Make sure to call loadEmbedder() before using this.
+ * @param text The input text chunk
+ * @returns Promise<number[]> The embedding vector
+ */
+export async function embedChunk(text: string): Promise<number[]> {
+  if (!embedder) {
+    throw new Error("Embedder not loaded. Call loadEmbedder() first.");
+  }
+  const output = await embedder(text, { pooling: "mean", normalize: true });
+  // output[0] is a Tensor object, convert its data to a plain array
+  const tensor = output[0];
+  return Array.from(tensor.data);
+}
+
+export interface ChunkedLLMReadable {
+  url: string;
+  content: string;
+  timestamp: Date;
+  chunkId?: string; // optional unique chunk identifier
+}
+
+/**
+ * Saves url parsed content to disk
+ */
+export const saveContentToDisk = (url: string, content: ChunkedLLMReadable) => {
+  const safeFileName = url.replace(/[^a-zA-Z0-9-_]/g, "_");
+  const directory = path.join(os.homedir(), "data");
+  const filePath = path.join(directory, `${safeFileName}.json`);
+
+  // Ensure the directory exists before writing
+  if (!fs.existsSync(directory)) {
+    fs.mkdirSync(directory, { recursive: true });
+  }
+
+  fs.writeFileSync(filePath, JSON.stringify(content, null, 2), {
+    encoding: "utf8",
+  });
+};
+
+/**
+ * Splits markdown text into overlapping chunks based on word count.
+ * Approximate target: 400 tokens (~500 words) with 50 token (~65 word) overlap.
+ *
+ * @param {string} markdown - The markdown text to split.
+ * @returns {string[]} Array of chunk strings.
+ */
+export function chunkMarkdownSlidingWindow(markdown: string): string[] {
+  const words = markdown.split(/\s+/);
+  const chunkSize = 500; // ~400 tokens
+  const overlap = 65; // ~50 tokens
+  const chunks: string[] = [];
+
+  for (let start = 0; start < words.length; start += chunkSize - overlap) {
+    const end = Math.min(start + chunkSize, words.length);
+    const chunk = words.slice(start, end).join(" ");
+    chunks.push(chunk);
+    if (end === words.length) break;
+  }
+
+  return chunks;
+}
+
+/**
+ * Chunks markdown, generates embeddings, and saves to Qdrant
+ * @param url The page URL
+ * @param markdown The markdown content
+ * @param timestamp The timestamp
+ */
+export async function saveChunksToQdrant(
+  url: string,
+  markdown: string,
+  timestamp: Date
+) {
+  await loadEmbedder();
+
+  const chunks = chunkMarkdownSlidingWindow(markdown);
+  const points = [];
+
+  for (let idx = 0; idx < chunks.length; idx++) {
+    const chunkText = chunks[idx];
+    const embedding = await embedChunk(chunkText);
+
+    // console.error(
+    //   "Embedding shape/type for chunk",
+    //   idx,
+    //   ":",
+    //   Array.isArray(embedding),
+    //   "length:",
+    //   embedding.length,
+    //   "sample:",
+    //   embedding.slice(0, 5)
+    // );
+
+    const chunkId = `${url}#chunk-${idx}`;
+
+    points.push({
+      id: crypto.randomUUID(),
+      vector: embedding,
+      payload: {
+        url,
+        chunk_id: chunkId,
+        content: chunkText,
+        timestamp: timestamp.toISOString(),
+      },
+    });
+  }
+
+  try {
+    await qdrant.upsert(COLLECTION_NAME, { points });
+  } catch (err) {
+    console.error("Error upserting to Qdrant:", err);
+  }
+}
+
+
+================================================
+File: src/index.ts
+================================================
+import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+
+import {
+  CallToolRequestSchema,
+  ListToolsRequestSchema,
+} from "@modelcontextprotocol/sdk/types.js";
+import tools from "./tools.js";
+import { z } from "zod";
+import server from "./server.js";
+import { crawlWebsite } from "./crawling.js";
+
+const crawlUrlArgsSchema = z.object({
+  url: z.string().url(),
+  waitForSelector: z.string().optional(),
+  queries: z.array(z.string()).optional(),
+});
+
+/**
+ * List the available tools
+ */
+server.setRequestHandler(ListToolsRequestSchema, async () => {
+  return {
+    tools: tools,
+  };
+});
+
+/**
+ * Handle tool invocations
+ */
+server.setRequestHandler(CallToolRequestSchema, async (request) => {
+  if (request.params.name !== "Get online documentation") {
+    throw new Error(`Unknown tool: ${request.params.name}`);
+  }
+
+  const { url, waitForSelector, queries } = crawlUrlArgsSchema.parse(
+    request.params.arguments
+  );
+
+  return crawlWebsite(url, waitForSelector, queries);
+});
+
+/**
+ * Start the server using stdio transport.
+ */
+async function main() {
+  const transport = new StdioServerTransport();
+  await server.connect(transport);
+}
+
+main().catch((error) => {
+  console.error("Server error:", error);
+  process.exit(1);
+});
+
+
+================================================
+File: src/server.ts
+================================================
+/**
+ * MCP server that exposes a Puppeteer-based web crawler.
+ * It provides a single tool "crawl_url" that fetches the HTML content of a given URL.
+ */
+
+import { Server } from "@modelcontextprotocol/sdk/server/index.js";
+
+/**
+ * Create an MCP server with a single tool: crawl_url
+ */
+export default new Server(
+  {
+    name: "quasar-crawler",
+    version: "0.2.0",
+  },
+  {
+    capabilities: {
+      resources: {},
+      tools: {},
+      prompts: {},
+    },
+  }
+);
+
+
+================================================
+File: src/tools.ts
+================================================
+export default [
+  {
+    name: "Get online documentation",
+    description: "Get documentation about any library/tool/framework/etc.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        url: {
+          type: "string",
+          description: "The URL to crawl",
+        },
+        waitForSelector: {
+          type: "string",
+          description: "Optional CSS selector to wait for before scraping",
+        },
+        queries: {
+          type: "array",
+          description:
+            "List of search queries you want to search for. Make sure they are all different and pick at least 3!",
+          items: { type: "string" },
+        },
+      },
+      required: ["url"],
+    },
+  },
+];
+
+

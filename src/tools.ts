@@ -23,4 +23,21 @@ export default [
       required: ["url"],
     },
   },
+  {
+    name: "Search documentation",
+    description:
+      "Search previously crawled documentation without crawling. If not enough info, crawl more",
+    inputSchema: {
+      type: "object",
+      properties: {
+        queries: {
+          type: "array",
+          description:
+            "List of search queries you want to search for. Make sure they are all different and pick at least 3!",
+          items: { type: "string" },
+        },
+      },
+      required: ["queries"],
+    },
+  },
 ];
